@@ -8,7 +8,7 @@ declare var Proxy:new (obj:any, proxy:any) => any;
 declare var Symbol:any;
 
 import {RawValue, Register, isRegister, GlobalInterner, Scan, IGNORE_REG, ID,
-        InsertNode, WatchNode, Node, Constraint, FunctionConstraint, Change} from "./runtime";
+        InsertNode, WatchNode, Node, Constraint, FunctionConstraint, Change, concatArray} from "./runtime";
 import * as runtime from "./runtime";
 import * as indexes from "./indexes";
 
@@ -58,11 +58,16 @@ function isRecord(a:any): a is DSLRecord {
   return a instanceof DSLRecord;
 }
 
+function toArray<T>(x:T|T[]):T[] {
+  if(x.constructor === Array) return x as T[];
+  return [x as T];
+}
+
 //--------------------------------------------------------------------
 // DSLVariable
 //--------------------------------------------------------------------
 
-type DSLVariableParent = DSLFunction|DSLRecord;
+type DSLVariableParent = DSLFunction|DSLRecord|DSLLookup;
 type DSLNode = DSLFunction|DSLRecord|DSLVariable|RawValue;
 
 type DSLValue = RawValue|Register;
@@ -147,6 +152,34 @@ class DSLFunction {
 }
 
 //--------------------------------------------------------------------
+// DSLLookup
+//--------------------------------------------------------------------
+
+class DSLLookup {
+  entity:DSLVariable;
+  attribute:DSLVariable;
+  value:DSLVariable;
+
+  constructor(public __block:DSLBlock, entityObject: DSLRecord|DSLVariable) {
+    this.entity = toVariable(entityObject);
+    this.attribute = new DSLVariable("lookup attribute", this);
+    __block.registerVariable(this.attribute);
+    this.value = new DSLVariable("lookup value", this);
+    __block.registerVariable(this.value);
+  }
+
+  compile() {
+    let scans:Scan[] = [];
+    let e = maybeIntern(toValue(this.entity));
+    let a = maybeIntern(toValue(this.attribute));
+    let v = maybeIntern(toValue(this.value));
+    scans.push(new Scan(e, a, v, IGNORE_REG))
+    return scans;
+  }
+
+}
+
+//--------------------------------------------------------------------
 // DSLRecord
 //--------------------------------------------------------------------
 
@@ -159,12 +192,13 @@ class DSLRecord {
   __output: boolean = false;
   /** If a record is an output, it needs an id by default unless its modifying an existing record. */
   __needsId: boolean = true;
-  __fields: any;
+  __fields: {[field:string]: (RawValue|DSLNode)[]};
+  __dynamicFields: [DSLVariable, DSLNode[]][] = [];
   constructor(public __block:DSLBlock, tags:string[], initialAttributes:any, entityVariable?:DSLVariable) {
     let fields:any = {tag: tags};
     for(let field in initialAttributes) {
       let values = initialAttributes[field];
-      if(field.constructor !== Array) {
+      if(values.constructor !== Array) {
         values = [values];
       }
       for(let value of values) {
@@ -244,13 +278,23 @@ class DSLRecord {
     })
   }
 
-  add(attributeName:string, value:DSLNode) {
+  add(attributeName:string|DSLVariable, values:DSLNode|DSLNode[]) {
     if(this.__block !== this.__block.program.contextStack[0]) {
       throw new Error("Adds and removes may only happen in the root block.");
     }
-    let record = new DSLRecord(this.__block, [], {[attributeName]: value}, this.__record);
+    values = toArray(values);
+
+    let record = new DSLRecord(this.__block, [], {}, this.__record);
     record.__output = true;
     this.__block.records.push(record);
+
+    if(typeof attributeName === "string") {
+      record.__fields[attributeName] = values;
+
+    } else {
+      record.__dynamicFields.push([attributeName, values]);
+    }
+
     return this;
   }
 
@@ -285,10 +329,22 @@ class DSLRecord {
           inserts.push(new InsertNode(e, maybeIntern(field), maybeIntern(value), maybeIntern(program.nodeCount++)))
         }
       }
+      for(let [dslField, dslValues] of this.__dynamicFields) {
+        let field = toValue(dslField) as Register;
+        for(let dslValue of dslValues) {
+          let value = toValue(dslValue) as (RawValue | Register);
+          if(this.__block.watcher) {
+            inserts.push(new WatchNode(e, field, maybeIntern(value), maybeIntern(program.nodeCount++)))
+          } else {
+            inserts.push(new InsertNode(e, field, maybeIntern(value), maybeIntern(program.nodeCount++)))
+          }
+        }
+      }
     }
     if(this.__needsId) {
       inserts.push(FunctionConstraint.create("eve/internal/gen-id", {result: e}, values) as FunctionConstraint);
     }
+
     return inserts;
   }
 
@@ -314,6 +370,7 @@ export type BlockFunction = (block:DSLBlock) => any;
 
 class DSLBlock {
   records:DSLRecord[] = [];
+  lookups:DSLLookup[] = [];
   variables:DSLVariable[] = [];
   functions:DSLFunction[] = [];
   cleanFunctions:(DSLFunction|undefined)[] = [];
@@ -417,6 +474,13 @@ class DSLBlock {
   not = (func:(block:DSLBlock) => void) => {
     let not = new DSLNot(`${this.name} NOT ${this.nots.length}`, func, this.program, false);
     this.nots.push(not);
+  }
+
+  lookup = (entityVariable:DSLVariable|DSLRecord) => {
+    let active = this.getActiveBlock();
+    let node = new DSLLookup(active, entityVariable);
+    active.lookups.push(node);
+    return node;
   }
 
   union = (...branches:(() => any)[]) => {
@@ -560,8 +624,10 @@ class DSLBlock {
   compile(injections:(DSLCompilable|undefined)[] = []) {
     this.program.contextStack.push(this);
 
-    let functions = this.cleanFunctions;
-    let items:(DSLCompilable|undefined)[] = injections.concat(functions.concat(this.records as any) as any);
+    let items:(DSLCompilable|undefined)[] = this.cleanFunctions.slice();
+    concatArray(items, injections);
+    concatArray(items, this.records);
+    concatArray(items, this.lookups);
     let constraints = [];
     let nodes = [];
     for(let toCompile of items) {
@@ -869,7 +935,7 @@ export class Program {
   input(changes:runtime.Change[]) {
     let trans = new runtime.Transaction(changes[0].transaction, this.runtimeBlocks, changes, this._exporter && this._exporter.handle);
     trans.exec(this.index);
-    // console.log(trans.changes.map((change, ix) => `    <- ${change}`).join("\n"));
+    console.log(trans.changes.map((change, ix) => `    <- ${change}`).join("\n"));
     return trans;
   }
 
@@ -883,6 +949,24 @@ export class Program {
   }
 }
 
+  // let prog = new Program("test");
+  // prog.block("simple block", ({find, record, lib, choose, union, not, lookup}) => {
+  //   let elem = find("html/element");
+  //   let {attribute} = lookup(elem);
+  //   return [
+  //     record({elem, attribute})
+  //   ];
+  // });
+
+  // prog.test(1, [
+  //   [2, "tag", "html/element"],
+  //   [2, "tagname", "div"],
+  //   [2, "children", 3],
+
+  //   [3, "tag", "html/element"],
+  //   [3, "tagname", "floop"],
+  //   [3, "text", "k"],
+  // ]);
 
   // let prog = new Program("test");
   // prog.block("simple block", ({find, record, lib, choose, union, not}) => {

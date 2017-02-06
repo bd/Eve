@@ -316,7 +316,7 @@ class DSLRecord {
   toInserts() {
     let program = this.__block.program;
     let inserts:(Constraint|Node)[] = [];
-    let e = maybeIntern(this.__record.value);
+    let e = maybeIntern(toValue(this.__record));
     let values = [];
     for(let field in this.__fields) {
       for(let dslValue of this.__fields[field]) {
@@ -350,7 +350,7 @@ class DSLRecord {
 
   toScans() {
     let scans:Scan[] = [];
-    let e = maybeIntern(this.__record.value);
+    let e = maybeIntern(toValue(this.__record));
     for(let field in this.__fields) {
       for(let dslValue of this.__fields[field]) {
         let value = toValue(dslValue) as (RawValue | Register);

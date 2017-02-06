@@ -266,7 +266,9 @@ export class Change {
   }
 
   toString() {
-    return `Change(${GlobalInterner.reverse(this.e)}, ${GlobalInterner.reverse(this.a)}, ${GlobalInterner.reverse(this.v)}, ${GlobalInterner.reverse(this.n)}, ${this.transaction}, ${this.round}, ${this.count})`;
+    let rawV = GlobalInterner.reverse(this.v);
+    let v = (""+rawV).indexOf("|") === -1 ? rawV : this.v;
+    return `Change(${this.e}, ${GlobalInterner.reverse(this.a)}, ${v}, ${GlobalInterner.reverse(this.n)}, ${this.transaction}, ${this.round}, ${this.count})`;
   }
 
   equal(other:Change, withoutNode?:boolean, withoutE?:boolean) {
@@ -1306,7 +1308,7 @@ export class WatchNode extends InsertNode {
 
     let key = this.key(e, a, v);
     let prevCount = this.intermediates[key] || 0;
-    let newCount = prevCount + prefixCount * input.count;
+    let newCount = prevCount + prefixCount;
     this.intermediates[key] = newCount;
 
     let delta = 0;
@@ -1683,8 +1685,8 @@ export class Transaction {
       let exports = createArray("exportsArray");
       this.collapseMultiplicity(this.exportedChanges, exports);
       if(exports.length) {
-        // console.log("Exporting:");
-        // console.log("  " + exports.join("\n  "));
+        console.log("Exporting:");
+        console.log("  " + exports.join("\n  "));
         this.exportHandler(exports);
       }
     }

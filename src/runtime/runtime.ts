@@ -951,6 +951,9 @@ type ResolvedEAVN = {e:ResolvedValue, a:ResolvedValue, v:ResolvedValue, n:Resolv
  * Base class for nodes, the building blocks of blocks.
  */
 export interface Node {
+  /** Reset any state associated with this node in-between rounds */
+  reset():void;
+
   /**
    * Evaluate the node in the context of the currently solved prefix,
    * returning a set of valid prefixes to continue the query as
@@ -1019,6 +1022,8 @@ export class JoinNode implements Node {
     this.proposedResultsArrays = proposedResultsArrays;
   }
 
+  reset() {}
+
   findAffectedConstraints(input:Change, prefix:ID[]):Iterator<Constraint> {
     // @TODO: Hoist me out.
     let affectedConstraints = this.affectedConstraints;
@@ -1036,6 +1041,7 @@ export class JoinNode implements Node {
   }
 
   applyCombination(index:Index, input:Change, prefix:ID[], transaction:number, round:number, results:Iterator<ID[]>) {
+    debug("        Join combo:", prefix.toString());
     let countOfSolved = 0;
     for(let field of prefix) {
       if(field !== undefined) countOfSolved++;
@@ -1250,6 +1256,7 @@ export class JoinNode implements Node {
 
 export class InsertNode implements Node {
   intermediates:{[key:string]: number|undefined} = {};
+  deduper:{[key:number]: ID[][]} = {};
 
   constructor(public e:ID|Register,
               public a:ID|Register,
@@ -1260,11 +1267,51 @@ export class InsertNode implements Node {
 
   resolve = Scan.prototype.resolve;
 
+  reset() {
+    this.deduper = {};
+  }
+
+  prefixKey(prefix:ID[]) {
+    let key = 0;
+    for(let ix = 0, len = prefix.length; ix < len; ix++) {
+      let value = +prefix[ix];
+      key += value;
+    }
+    if(isNaN(key)) throw new Error("Got prefix in InsertNode that has an undefined in it");
+    return key;
+  }
+
+  dedupe(prefix:ID[]) {
+    let {deduper} = this;
+    let prefixKey = this.prefixKey(prefix);
+    let matched = false;
+    let found = deduper[prefixKey];
+    if(found) {
+      maybePrefixLoop: for(let maybePrefix of found) {
+        if(maybePrefix.length !== prefix.length) continue;
+        for(let ix = 0, len = prefix.length; ix < len; ix++) {
+          if(maybePrefix[ix] != prefix[ix]) continue maybePrefixLoop;
+        }
+        matched = true;
+        break;
+      }
+    }
+    if(!matched) {
+      if(!found) deduper[prefixKey] = [prefix];
+      else found.push(prefix);
+      return true;
+    }
+    return false;
+  }
+
   key(e:ResolvedValue, a:ResolvedValue, v:ResolvedValue, round:number) {
     return `${e}|${a}|${v}|${round}`;
   }
 
   exec(index:Index, input:Change, prefix:ID[], transactionId:number, round:number, results:Iterator<ID[]>, transaction:Transaction):boolean {
+    if(!this.dedupe(prefix)) {
+      return true;
+    }
     let {e,a,v,n} = this.resolve(prefix);
 
     // @FIXME: This is pretty wasteful to copy one by one here.
@@ -1300,11 +1347,11 @@ export class InsertNode implements Node {
       let change = new Change(e!, a!, v!, n!, transactionId, prefixRound + 1, delta);
       this.output(transaction, change);
 
-      console.log(`    YEP (${prevCount} + ${prefixCount} = ${newCount}) ` + new Change(e!, a!, v!, n!, transactionId, prefixRound + 1, delta));
+      // console.log(`    YEP (${prevCount} + ${prefixCount} = ${newCount}) ` + new Change(e!, a!, v!, n!, transactionId, prefixRound + 1, delta));
     }
 
     else if(e === 61) {
-      console.log(`    NOP (${prevCount} + ${prefixCount} = ${newCount}) ` + new Change(e!, a!, v!, n!, transactionId, prefixRound + 1, delta));
+      // console.log(`    NOP (${prevCount} + ${prefixCount} = ${newCount}) ` + new Change(e!, a!, v!, n!, transactionId, prefixRound + 1, delta));
     }
 
     return true;
@@ -1362,6 +1409,8 @@ abstract class BinaryFlow implements Node {
   rightResults = new Iterator<ID[]>();
 
   constructor(public left:Node, public right:Node) { }
+
+  reset() {}
 
   exec(index:Index, input:Change, prefix:ID[], transaction:number, round:number, results:Iterator<ID[]>, changes:Transaction):boolean {
     let {left, right, leftResults, rightResults} = this;
@@ -1565,6 +1614,7 @@ export class Block {
     // We populate the prefix with values from the input change so we only derive the
     // results affected by it.
     for(let node of this.nodes) {
+      node.reset();
       while((prefix = this.results.next()) !== undefined) {
         let valid = node.exec(index, input, prefix, transaction.transaction, transaction.round, this.nextResults, transaction);
         if(!valid) {

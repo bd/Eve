@@ -1297,8 +1297,14 @@ export class InsertNode implements Node {
       GlobalInterner.reference(a!);
       GlobalInterner.reference(v!);
       GlobalInterner.reference(n!);
-      let change = new Change(e!, a!, v!, n!, transactionId, prefixRound + 1, prefixCount);
+      let change = new Change(e!, a!, v!, n!, transactionId, prefixRound + 1, delta);
       this.output(transaction, change);
+
+      console.log(`    YEP (${prevCount} + ${prefixCount} = ${newCount}) ` + new Change(e!, a!, v!, n!, transactionId, prefixRound + 1, delta));
+    }
+
+    else if(e === 61) {
+      console.log(`    NOP (${prevCount} + ${prefixCount} = ${newCount}) ` + new Change(e!, a!, v!, n!, transactionId, prefixRound + 1, delta));
     }
 
     return true;

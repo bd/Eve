@@ -112,6 +112,7 @@ class HTMLWatcher extends Watcher {
         for(let e of Object.keys(diff.adds)) {
           let {instance:instanceId, tagname, element} = diff.adds[e];
           let instance = this.getInstance(instanceId, tagname);
+          console.log(instance);
           instance.__element = element;
         }
       })
@@ -219,8 +220,8 @@ class HTMLWatcher extends Watcher {
         ];
       })
       .asDiffs("html/attribute", (changes) => {
-        // console.log("Diffs: (html/attribute)");
-        // console.log("  " + changes.join("\n  "));
+        console.log("Diffs: (html/attribute)");
+        console.log("  " + changes.join("\n  "));
 
         for(let {e, a, v, count} of changes) {
           let instance = this.getInstance(e);
